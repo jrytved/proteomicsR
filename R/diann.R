@@ -19,7 +19,23 @@
 #' @importFrom arrow read_parquet
 #' @importFrom dplyr bind_rows
 #' @export
-read_parquet_pathlist <- function(dirlist) { ... }
+read_parquet_pathlist <- function(dirlist){
+  
+  # Given a list of directories, finds the report.parquet in each, reads it
+  # and joins them all together.
+  
+  paths <- lapply(dirlist, list.files, pattern="^report\\.parquet$", full.names=T)
+  
+  n_matches <- paths |> length()
+  
+  s <- sprintf("Found %i match(es)", n_matches)
+  print(s)
+  
+  out <- lapply(paths, arrow::read_parquet)
+  out.bound <- bind_rows(out)
+  return(out.bound)
+  
+}
 
 
 #' Extract Run ID from a DIA-NN Report
@@ -44,7 +60,14 @@ read_parquet_pathlist <- function(dirlist) { ... }
 #' @importFrom dplyr mutate
 #' @importFrom stringr str_extract
 #' @export
-extract_run_id <- function(report, re, g) { ... }
+extract_run_id <- function(report, re, g){
+  
+  # Given a DIA-NN parquet report and a re-pattern, maps the pattern over the Run
+  # column, extracts the given group and adds it to a new 'uid'-column.
+  report%>%mutate(uid = str_extract(Run, pattern=re, group=g))
+  
+}
+
 
 
 #' Plot Identification Counts Across Conditions
@@ -83,7 +106,53 @@ extract_run_id <- function(report, re, g) { ... }
 #'   theme_minimal theme element_text geom_jitter geom_text
 #' @importFrom RColorBrewer brewer.pal
 #' @export
-plot_identifications <- function(df, meta, condition_col = "Condition", replicate_col = "Replicate") { ... }
+plot_identifications <- function(df, meta, condition_col = "Condition", replicate_col = "Replicate") {
+  
+  df.joined <- df %>% left_join(meta)
+  
+  summarise_measures <- function(df){
+    df %>% summarise(
+      N.Protein.Groups = n_distinct(Protein.Group[Lib.PG.Q.Value <= 0.01]),
+      N.Precursors = n_distinct(Precursor.Id[Lib.Q.Value <= 0.01]),
+      N.Peptide = n_distinct(Stripped.Sequence[Lib.Peptidoform.Q.Value <= 0.01]),
+      N.Peptidoform = n_distinct(Modified.Sequence[Lib.Peptidoform.Q.Value <= 0.01]),
+      .groups = "drop"
+    )
+  }
+  
+  condition_replicate_summarised <- df.joined %>% 
+    group_by(across(all_of(c(condition_col, replicate_col)))) %>%
+    summarise_measures() %>%
+    pivot_longer(-all_of(c(condition_col, replicate_col)), 
+                 names_to = "Level", values_to = "Value")
+  
+  condition_summarised <- condition_replicate_summarised %>%
+    group_by(across(all_of(c(condition_col, "Level")))) %>%
+    summarise(Mean = mean(Value), .groups = "drop")
+  
+  condition_var_summarised <- condition_replicate_summarised %>%
+    group_by(across(all_of(c(condition_col, "Level")))) %>%
+    summarise(
+      CV = sd(Value) / mean(Value),
+      Mean = mean(Value),
+      .groups = "drop"
+    )
+  
+  p <- ggplot(condition_summarised, aes(x = .data[[condition_col]], y = Mean)) +
+    geom_bar(stat = "identity", color = "black", aes(fill = Level)) +
+    facet_wrap(~Level, scales = "free_y") +
+    scale_fill_brewer(palette = "GnBu") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = -90)) +
+    geom_jitter(condition_replicate_summarised, 
+                mapping = aes(x = .data[[condition_col]], y = Value), 
+                width = 0.1) +
+    geom_text(condition_var_summarised,
+              mapping = aes(x = .data[[condition_col]], y = Mean + 0.1 * Mean, 
+                           label = sprintf("CV=%.1f%%", CV * 100)))
+  
+  return(p)
+}
 
 
 #' Summarise Identification Counts Across Conditions
@@ -120,7 +189,37 @@ plot_identifications <- function(df, meta, condition_col = "Condition", replicat
 #' @importFrom dplyr left_join group_by summarise n_distinct across all_of
 #' @importFrom tidyr pivot_longer
 #' @export
-summarise_identifications <- function(df, meta, condition_col = "Condition", replicate_col = "Replicate", get_replicate_level = TRUE) { ... }
+summarise_identifications <- function(df, meta, condition_col = "Condition", replicate_col = "Replicate", get_replicate_level = TRUE) {
+  
+  df.joined <- df %>% left_join(meta)
+  
+  summarise_measures <- function(df){
+    df %>% summarise(
+      N.Protein.Groups = n_distinct(Protein.Group[Lib.PG.Q.Value <= 0.01]),
+      N.Precursors = n_distinct(Precursor.Id[Lib.Q.Value <= 0.01]),
+      N.Peptide = n_distinct(Stripped.Sequence[Lib.Peptidoform.Q.Value <= 0.01]),
+      N.Peptidoform = n_distinct(Modified.Sequence[Lib.Peptidoform.Q.Value <= 0.01]),
+      .groups = "drop"
+    )
+  }
+  
+  condition_replicate_summarised <- df.joined %>% 
+    group_by(across(all_of(c(condition_col, replicate_col)))) %>%
+    summarise_measures() %>%
+    pivot_longer(-all_of(c(condition_col, replicate_col)), 
+                 names_to = "Level", values_to = "Value")
+  
+  condition_summarised <- condition_replicate_summarised %>%
+    group_by(across(all_of(c(condition_col, "Level")))) %>%
+    summarise(Mean = mean(Value), .groups = "drop")
+  
+  if(get_replicate_level){
+    return(condition_replicate_summarised)
+  } else {
+    return(condition_summarised)
+  }
+  
+}
 
 
 #' Compute Precursor-Level Coefficient of Variation
@@ -157,7 +256,24 @@ summarise_identifications <- function(df, meta, condition_col = "Condition", rep
 #'
 #' @importFrom dplyr left_join group_by summarise mutate filter across all_of n
 #' @export
-compute_precursor_cv <- function(data, meta, condition_col, replicate_col, n_min = 3, threshold = 0.2) { ... }
+compute_precursor_cv <- function(data, meta, condition_col, replicate_col, n_min=3, threshold = 0.2){
+  
+  cv.data <- data %>%
+  left_join(meta)%>%
+  group_by(across(all_of(c(condition_col, "Precursor.Id"))))%>%
+  summarise(
+    N = n(),
+    mean = mean(Precursor.Normalised+0.1),
+    sd = sd(Precursor.Normalised+0.1),
+    .groups="drop"
+  ) %>%
+  mutate(CV = sd/mean)%>%
+  filter(N >= n_min)%>%
+  mutate(LT = CV <= threshold)
+    
+  return(cv.data)
+  
+}
 
 
 #' Compute Protein Group-Level Coefficient of Variation
@@ -194,4 +310,21 @@ compute_precursor_cv <- function(data, meta, condition_col, replicate_col, n_min
 #'
 #' @importFrom dplyr left_join group_by summarise mutate filter across all_of n
 #' @export
-compute_pg_cv <- function(data, meta, condition_col, replicate_col, n_min = 3, threshold = 0.2) { ... }
+compute_pg_cv <- function(data, meta, condition_col, replicate_col, n_min=3, threshold = 0.2){
+  
+  cv.data <- data %>%
+  left_join(meta)%>%
+  group_by(across(all_of(c(condition_col, "Protein.Group"))))%>%
+  summarise(
+    N = n(),
+    mean = mean(PG.MaxLFQ+0.1),
+    sd = sd(PG.MaxLFQ+0.1),
+    .groups="drop"
+  ) %>%
+  mutate(CV = sd/mean)%>%
+  filter(N >= n_min)%>%
+  mutate(LT = CV <= threshold)
+    
+  return(cv.data)
+  
+}
