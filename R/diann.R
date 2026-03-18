@@ -37,6 +37,25 @@ read_parquet_pathlist <- function(dirlist){
   
 }
 
+read_parquet_sitereport_pathlist <- function(dirlist){
+  
+  # Given a list of directories, finds the report.parquet in each, reads it
+  # and joins them all together.
+  
+  paths <- lapply(dirlist, list.files, pattern="^report\\.site_report\\.parquet$", full.names=T)
+  
+  n_matches <- paths |> length()
+  
+  s <- sprintf("Found %i match(es)", n_matches)
+  print(s)
+  
+  out <- lapply(paths, arrow::read_parquet)
+  out.bound <- bind_rows(out)
+  return(out.bound)
+  
+}
+
+
 
 #' Extract Run ID from a DIA-NN Report
 #'
@@ -327,4 +346,21 @@ compute_pg_cv <- function(data, meta, condition_col, replicate_col, n_min=3, thr
     
   return(cv.data)
   
+}
+
+#' @export
+remove_crap <- function(df){
+  df %>%
+    filter(!grepl("cRAP", Protein.Ids))
+}
+
+#' @export
+force_proteotypic <- function(df){
+  df %>%
+    filter(Proteotypic == T)
+}
+
+#' @export
+is_phosphorylated <- function(v){
+  return(grepl("UniMod:21", v))
 }
